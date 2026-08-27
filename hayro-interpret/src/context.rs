@@ -88,9 +88,8 @@ impl<'a> Context<'a> {
     ) -> Self {
         let ocg_state = {
             let root_ref = xref.root_id();
-            xref.get::<Dict<'_>>(root_ref)
-                .map(|catalog| OcgState::from_catalog(&catalog))
-                .unwrap_or_default()
+            let catalog = xref.get::<Dict<'_>>(root_ref).unwrap_or_default();
+            OcgState::from_catalog(&catalog, &settings.ocg_overrides)
         };
 
         Self {

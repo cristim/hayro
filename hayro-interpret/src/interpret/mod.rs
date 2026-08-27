@@ -16,11 +16,14 @@ use crate::x_object::{FormXObject, ImageXObject, XObject};
 use hayro_syntax::content::TypedIter;
 use hayro_syntax::content::ops::TypedInstruction;
 use hayro_syntax::object::dict::keys::{ANNOTS, AP, AS, F, MCID, N, OC, RECT};
-use hayro_syntax::object::{Array, Dict, Name, Object, Rect, Stream, dict_or_stream};
+use hayro_syntax::object::{
+    Array, Dict, Name, Object, ObjectIdentifier, Rect, Stream, dict_or_stream,
+};
 use hayro_syntax::page::{Page, Resources};
 use kurbo::{Affine, Point, Shape};
 use rustc_hash::FxHashMap;
 use smallvec::smallvec;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) mod path;
@@ -100,6 +103,15 @@ pub struct InterpreterSettings {
     /// Note that this feature is currently not fully implemented yet, so some
     /// annotations might be missing.
     pub render_annotations: bool,
+    /// Overrides for the visibility of optional content groups.
+    ///
+    /// Which optional content groups are visible is otherwise decided by the
+    /// default configuration of the PDF file (`/OCProperties` `/D`). An entry
+    /// here overrides that decision for the group with the given object
+    /// identifier: `true` shows its content, `false` hides it. This is what a
+    /// viewer needs to offer a layers panel, since the user's choice there is
+    /// not part of the file.
+    pub ocg_overrides: Arc<HashMap<ObjectIdentifier, bool>>,
 }
 
 impl Default for InterpreterSettings {
@@ -118,6 +130,7 @@ impl Default for InterpreterSettings {
             cmap_resolver: Arc::new(|_| None),
             warning_sink: Arc::new(|_| {}),
             render_annotations: true,
+            ocg_overrides: Arc::new(HashMap::new()),
         }
     }
 }

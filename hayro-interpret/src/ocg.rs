@@ -1,6 +1,6 @@
 use hayro_syntax::object::dict::keys::{BASE_STATE, D, OCGS, OCMD, OCPROPERTIES, OFF, ON, P, TYPE};
 use hayro_syntax::object::{Array, Dict, Name, ObjectIdentifier};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) struct OcgState {
     inactive_ocgs: HashSet<ObjectIdentifier>,
@@ -8,20 +8,35 @@ pub(crate) struct OcgState {
 }
 
 impl OcgState {
-    fn dummy() -> Self {
+    pub(crate) fn from_catalog(
+        catalog: &Dict<'_>,
+        overrides: &HashMap<ObjectIdentifier, bool>,
+    ) -> Self {
+        let mut inactive = Self::inactive_from_catalog(catalog);
+
+        for (ocg, visible) in overrides {
+            if *visible {
+                inactive.remove(ocg);
+            } else {
+                inactive.insert(*ocg);
+            }
+        }
+
         Self {
-            inactive_ocgs: HashSet::default(),
-            visibility_stack: vec![],
+            inactive_ocgs: inactive,
+            visibility_stack: Vec::new(),
         }
     }
 
-    pub(crate) fn from_catalog(catalog: &Dict<'_>) -> Self {
+    /// The optional content groups turned off by the document's default
+    /// configuration.
+    fn inactive_from_catalog(catalog: &Dict<'_>) -> HashSet<ObjectIdentifier> {
         let Some(oc_properties) = catalog.get::<Dict<'_>>(OCPROPERTIES) else {
-            return Self::dummy();
+            return HashSet::default();
         };
 
         let Some(config) = oc_properties.get::<Dict<'_>>(D) else {
-            return Self::dummy();
+            return HashSet::default();
         };
 
         let mut inactive = HashSet::new();
@@ -59,10 +74,7 @@ impl OcgState {
         read_ocg_array(ON, true);
         read_ocg_array(OFF, false);
 
-        Self {
-            inactive_ocgs: inactive,
-            visibility_stack: Vec::new(),
-        }
+        inactive
     }
 
     pub(crate) fn begin_single_oc(&mut self, ocg_id: ObjectIdentifier) {
@@ -125,12 +137,6 @@ impl OcgState {
     }
 }
 
-impl Default for OcgState {
-    fn default() -> Self {
-        Self::dummy()
-    }
-}
-
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum BaseState {
     On,
@@ -166,5 +172,97 @@ impl OcmdPolicy {
             b"AllOff" => Some(Self::AllOff),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hayro_syntax::reader::{Reader, ReaderContext, ReaderExt};
+
+    /// Two optional content groups, the second one turned off by the default
+    /// configuration.
+    const CATALOG: &[u8] = b"<< /OCProperties << /OCGs [4 0 R 5 0 R] /D << /OFF [5 0 R] >> >> >>";
+
+    fn catalog(data: &[u8]) -> Dict<'_> {
+        Reader::new(data)
+            .read_with_context::<Dict<'_>>(&ReaderContext::dummy())
+            .unwrap()
+    }
+
+    fn first() -> ObjectIdentifier {
+        ObjectIdentifier::new(4, 0)
+    }
+
+    fn second() -> ObjectIdentifier {
+        ObjectIdentifier::new(5, 0)
+    }
+
+    fn is_visible(
+        catalog: &Dict<'_>,
+        overrides: &HashMap<ObjectIdentifier, bool>,
+        ocg: ObjectIdentifier,
+    ) -> bool {
+        let mut state = OcgState::from_catalog(catalog, overrides);
+        state.begin_single_oc(ocg);
+
+        state.is_visible()
+    }
+
+    #[test]
+    fn no_overrides() {
+        let catalog = catalog(CATALOG);
+        let overrides = HashMap::new();
+
+        assert!(is_visible(&catalog, &overrides, first()));
+        assert!(!is_visible(&catalog, &overrides, second()));
+    }
+
+    #[test]
+    fn overrides_replace_the_default_configuration() {
+        let catalog = catalog(CATALOG);
+        let overrides = HashMap::from([(first(), false), (second(), true)]);
+
+        assert!(!is_visible(&catalog, &overrides, first()));
+        assert!(is_visible(&catalog, &overrides, second()));
+    }
+
+    #[test]
+    fn overrides_without_optional_content_properties() {
+        let catalog = catalog(b"<< /Type /Catalog >>");
+        let overrides = HashMap::from([(first(), false)]);
+
+        assert!(!is_visible(&catalog, &overrides, first()));
+        assert!(is_visible(&catalog, &overrides, second()));
+    }
+
+    #[test]
+    fn overrides_apply_to_ocmd_policies() {
+        let root = catalog(CATALOG);
+        let is_visible = |overrides: &HashMap<ObjectIdentifier, bool>, policy: &[u8]| {
+            let mut data = b"<< /Type /OCMD /OCGs [4 0 R 5 0 R] /P /".to_vec();
+            data.extend_from_slice(policy);
+            data.extend_from_slice(b" >>");
+
+            let mut state = OcgState::from_catalog(&root, overrides);
+            state.begin_ocmd(&catalog(&data));
+
+            state.is_visible()
+        };
+
+        // The default configuration has the first group on and the second off.
+        let none = HashMap::new();
+        assert!(is_visible(&none, b"AnyOn"));
+        assert!(!is_visible(&none, b"AllOn"));
+
+        // Turning the second one on satisfies AllOn, and leaves nothing off.
+        let second_on = HashMap::from([(second(), true)]);
+        assert!(is_visible(&second_on, b"AllOn"));
+        assert!(!is_visible(&second_on, b"AnyOff"));
+
+        // Turning both off leaves nothing on.
+        let both_off = HashMap::from([(first(), false), (second(), false)]);
+        assert!(!is_visible(&both_off, b"AnyOn"));
+        assert!(is_visible(&both_off, b"AllOff"));
     }
 }
